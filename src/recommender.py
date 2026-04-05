@@ -3,7 +3,7 @@ import numpy as np
 from sklearn.metrics import mean_squared_error
 
 class MatrixFactorizer:
-    def __init__(self, n_factors=10, learning_rate=0.01, reg=0.02, epochs=5):
+    def __init__(self, n_factors=10, learning_rate=0.01, reg=0.02, epochs=3):
         self.n_factors = n_factors
         self.lr = learning_rate
         self.reg = reg
@@ -76,3 +76,37 @@ class MatrixFactorizer:
         predictions = test_df.apply(lambda x: self.predict_rating(x['userId'], x['movieId']), axis=1)
         mse = mean_squared_error(test_df['rating'], predictions)
         return mse
+
+    def predict_test_set(self, test_df):
+        """
+        Estimates a rating for every user-movie pair in the test set.
+        Returns the DataFrame with an additional 'predicted_rating' column.
+        """
+        print("Generating predictions for the test set...")
+
+        # We use a copy to avoid SettingWithCopyWarning
+        results_df = test_df.copy()
+
+        # Map the IDs to their latent indices
+        # We use .get() to handle users/movies not seen in training (Cold Start)
+        results_df['u_idx'] = results_df['userId'].map(self.user_map)
+        results_df['m_idx'] = results_df['movieId'].map(self.movie_map)
+
+        # Vectorized prediction for speed:
+        # For rows where we have both user and movie in training: Dot product of P and Q
+        # For others (Cold Start): We default to the global mean (3.5)
+
+        def get_prediction(row):
+            if pd.isna(row['u_idx']) or pd.isna(row['m_idx']):
+                return 3.5  # Simple Cold Start baseline
+
+            u = int(row['u_idx'])
+            m = int(row['m_idx'])
+            return np.dot(self.P[u, :], self.Q[m, :])
+
+        results_df['predicted_rating'] = results_df.apply(get_prediction, axis=1)
+
+        # Drop the temporary index columns
+        results_df.drop(columns=['u_idx', 'm_idx'], inplace=True)
+
+        return results_df
