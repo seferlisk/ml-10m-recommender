@@ -46,3 +46,45 @@ class GenreAnalyzer:
 
         self.summary_df = pd.DataFrame(results).sort_values('decrease', ascending=False)
         return self.summary_df
+
+    def get_adjusted_trends(self, confidence_quantile=0.25):
+        """
+        Adjusts for number of ratings using a Bayesian-style weighted average.
+        :param confidence_quantile: Used to determine 'm' (minimum ratings required).
+        """
+        if self.annual_stats is None:
+            self.analyze_trends()
+
+        # C = Global mean rating across the entire dataset
+        C = self.df['rating'].mean()
+
+        # m = Minimum ratings required to 'trust' the average.
+        # We use a quantile of existing counts to make it dynamic.
+        m = self.annual_stats['rating_count'].quantile(confidence_quantile)
+
+        # Calculate Weighted Rating: (v/(v+m) * R) + (m/(v+m) * C)
+        # v = count, R = mean
+        stats = self.annual_stats.copy()
+        stats['weighted_rating'] = (
+                (stats['rating_count'] / (stats['rating_count'] + m)) * stats['avg_rating'] +
+                (m / (stats['rating_count'] + m)) * C
+        )
+
+        results = []
+        for genre in stats['genre'].unique():
+            genre_data = stats[stats['genre'] == genre].sort_values('year')
+
+            if len(genre_data) < 2: continue
+
+            first_val = genre_data.iloc[0]['weighted_rating']
+            last_val = genre_data.iloc[-1]['weighted_rating']
+
+            results.append({
+                'genre': genre,
+                'raw_decrease': genre_data.iloc[0]['avg_rating'] - genre_data.iloc[-1]['avg_rating'],
+                'adjusted_decrease': first_val - last_val,
+                'start_count': int(genre_data.iloc[0]['rating_count'])
+            })
+
+        self.adjusted_summary = pd.DataFrame(results).sort_values('adjusted_decrease', ascending=False)
+        return self.adjusted_summary
