@@ -3,6 +3,9 @@ import numpy as np
 from sklearn.metrics import mean_squared_error
 
 class MatrixFactorizer:
+    """
+    THE MODEL: Handles only the mathematical training and raw prediction.
+    """
     def __init__(self, n_factors=10, learning_rate=0.01, reg=0.02, epochs=3):
         self.n_factors = n_factors
         self.lr = learning_rate
@@ -110,3 +113,38 @@ class MatrixFactorizer:
         results_df.drop(columns=['u_idx', 'm_idx'], inplace=True)
 
         return results_df
+
+class RecommenderEngine:
+    """
+    THE SERVICE: Implements specific business logic for different types of users.
+    """
+    def __init__(self, model, full_df):
+        self.model = model
+        self.df = full_df
+        # Cache movie information for quick lookup
+        self.movie_info = full_df[['movieId', 'title', 'genres']].drop_duplicates('movieId').set_index('movieId')
+
+    def recommend_cold_start(self, n=10, min_ratings=10000):
+        """
+        Step 5: Strategy for users with NO history (Popularity-based).
+        """
+        stats = self.df.groupby('movieId').agg(
+            avg_rating=('rating', 'mean'),
+            count=('rating', 'count')
+        )
+        top_ids = stats[stats['count'] >= min_ratings].sort_values('avg_rating', ascending=False).head(n).index
+        return self.movie_info.loc[top_ids]
+
+    def recommend_for_existing_user(self, user_id, n=10):
+        """
+        Strategy for users in our system (Model-based).
+        """
+        # Logic to predict ratings for all movies the user hasn't seen
+        pass
+
+    def recommend_by_context(self, movie_titles, n=10):
+        """
+        Step 6: Strategy for users who gave us a few samples (Content/Similarity).
+        """
+        # Logic to find similar items based on latent factors
+        pass
