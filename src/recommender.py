@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.metrics import mean_squared_error
 
 class MatrixFactorizer:
@@ -11,7 +12,6 @@ class MatrixFactorizer:
         self.lr = learning_rate
         self.reg = reg
         self.epochs = epochs
-
         self.user_map = {}
         self.movie_map = {}
         self.P = None  # User matrix
@@ -25,7 +25,7 @@ class MatrixFactorizer:
         return train, test
 
     def _create_mappings(self, train_df):
-        """Maps IDs to 0-indexed integers."""
+        """Maps IDs to 0-indexed integers for matrix indices."""
         unique_users = train_df['userId'].unique()
         unique_movies = train_df['movieId'].unique()
 
@@ -35,7 +35,7 @@ class MatrixFactorizer:
         return len(unique_users), len(unique_movies)
 
     def fit(self, train_df):
-        """Apply recommendation system using Gradient Descent."""
+        """Training using Stochastic Gradient Descent (SGD)."""
         n_users, n_movies = self._create_mappings(train_df)
 
         # Initialize latent matrices with small random values
@@ -63,7 +63,7 @@ class MatrixFactorizer:
             print(f"Epoch {epoch + 1}/{self.epochs} complete.")
 
     def predict_rating(self, user_id, movie_id):
-        """Estimates rating for a specific user and movie."""
+        """Predicts a rating for a specific user and movie pair."""
         u = self.user_map.get(user_id)
         m = self.movie_map.get(movie_id)
 
@@ -72,13 +72,6 @@ class MatrixFactorizer:
             return 3.5
 
         return np.dot(self.P[u, :], self.Q[m, :].T)
-
-    def evaluate(self, test_df):
-        """Compute MSE for the test set."""
-        print("Evaluating model on test set...")
-        predictions = test_df.apply(lambda x: self.predict_rating(x['userId'], x['movieId']), axis=1)
-        mse = mean_squared_error(test_df['rating'], predictions)
-        return mse
 
     def predict_test_set(self, test_df):
         """
@@ -90,8 +83,7 @@ class MatrixFactorizer:
         # We use a copy to avoid SettingWithCopyWarning
         results_df = test_df.copy()
 
-        # Map the IDs to their latent indices
-        # We use .get() to handle users/movies not seen in training (Cold Start)
+        # Pre-calculate indices to avoid repeated map lookups
         results_df['u_idx'] = results_df['userId'].map(self.user_map)
         results_df['m_idx'] = results_df['movieId'].map(self.movie_map)
 
@@ -103,9 +95,8 @@ class MatrixFactorizer:
             if pd.isna(row['u_idx']) or pd.isna(row['m_idx']):
                 return 3.5  # Simple Cold Start baseline
 
-            u = int(row['u_idx'])
-            m = int(row['m_idx'])
-            return np.dot(self.P[u, :], self.Q[m, :])
+            u, m = int(row['u_idx']), int(row['m_idx'])
+            return np.dot(self.P[u, :], self.Q[m, :].T)
 
         results_df['predicted_rating'] = results_df.apply(get_prediction, axis=1)
 
@@ -121,30 +112,52 @@ class RecommenderEngine:
     def __init__(self, model, full_df):
         self.model = model
         self.df = full_df
-        # Cache movie information for quick lookup
-        self.movie_info = full_df[['movieId', 'title', 'genres']].drop_duplicates('movieId').set_index('movieId')
+        # Distinct movie reference for metadata
+        self.movie_info = full_df[['movieId', 'title', 'genres']].drop_duplicates('movieId')
 
     def recommend_cold_start(self, n=10, min_ratings=10000):
-        """
-        Step 5: Strategy for users with NO history (Popularity-based).
-        """
+        """Popularity-based recommendations for brand-new users."""
         stats = self.df.groupby('movieId').agg(
             avg_rating=('rating', 'mean'),
             count=('rating', 'count')
-        )
-        top_ids = stats[stats['count'] >= min_ratings].sort_values('avg_rating', ascending=False).head(n).index
-        return self.movie_info.loc[top_ids]
+        ).reset_index()
 
-    def recommend_for_existing_user(self, user_id, n=10):
-        """
-        Strategy for users in our system (Model-based).
-        """
-        # Logic to predict ratings for all movies the user hasn't seen
-        pass
+        top_ids = stats[stats['count'] >= min_ratings].sort_values('avg_rating', ascending=False).head(n)['movieId']
+        return self.movie_info[self.movie_info['movieId'].isin(top_ids)]
 
     def recommend_by_context(self, movie_titles, n=10):
-        """
-        Step 6: Strategy for users who gave us a few samples (Content/Similarity).
-        """
-        # Logic to find similar items based on latent factors
-        pass
+        """Content-Similarity based on latent factors (Item-Item)."""
+        # 1. Identify movieIds from the provided titles
+        liked_ids = []
+        for title in movie_titles:
+            matches = self.movie_info[self.movie_info['title'].str.contains(title, case=False, na=False)]
+            if not matches.empty:
+                liked_ids.append(matches.iloc[0]['movieId'])
+
+        # 2. Get indices in the model's Q matrix
+        latent_indices = [self.model.movie_map[mid] for mid in liked_ids if mid in self.model.movie_map]
+
+        if not latent_indices:
+            return "Could not find any of those movies in the training data."
+
+        # 3. Create a 'pseudo-user' vector by averaging the latent factors of liked movies
+        user_vector = self.model.Q[latent_indices].mean(axis=0).reshape(1, -1)
+
+        # 4. Calculate similarity between this vector and all movies in Q
+        similarities = cosine_similarity(user_vector, self.model.Q).flatten()
+
+        # 5. Retrieve top N (filtering out the original liked movies)
+        top_indices = similarities.argsort()[::-1]
+
+        # Mapping indices back to movieIds
+        reverse_map = {v: k for k, v in self.model.movie_map.items()}
+
+        recommendations = []
+        for idx in top_indices:
+            movie_id = reverse_map[idx]
+            if movie_id not in liked_ids:
+                recommendations.append(movie_id)
+            if len(recommendations) == n:
+                break
+
+        return self.movie_info[self.movie_info['movieId'].isin(recommendations)]
