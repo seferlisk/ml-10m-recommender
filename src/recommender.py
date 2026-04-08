@@ -7,7 +7,7 @@ class MatrixFactorizer:
     """
     THE MODEL: Handles only the mathematical training and raw prediction.
     """
-    def __init__(self, n_factors=10, learning_rate=0.01, reg=0.02, epochs=3):
+    def __init__(self, n_factors=10, learning_rate=0.005, reg=0.02, epochs=3):
         self.n_factors = n_factors
         self.lr = learning_rate
         self.reg = reg
@@ -16,6 +16,7 @@ class MatrixFactorizer:
         self.movie_map = {}
         self.P = None  # User matrix
         self.Q = None  # Movie matrix
+        self.global_mean = 3.5
 
     def split_data(self, df):
         """Temporal split."""
@@ -36,27 +37,30 @@ class MatrixFactorizer:
 
     def fit(self, train_df):
         """Training using Stochastic Gradient Descent (SGD)."""
+        # Calculate actual global mean from training data
+        self.global_mean = train_df['rating'].mean()
         n_users, n_movies = self._create_mappings(train_df)
 
         # Initialize latent matrices with small random values
-        self.P = np.random.normal(scale=1. / self.n_factors, size=(n_users, self.n_factors))
-        self.Q = np.random.normal(scale=1. / self.n_factors, size=(n_movies, self.n_factors))
+        self.P = np.random.normal(scale=0.1, size=(n_users, self.n_factors))
+        self.Q = np.random.normal(scale=0.1, size=(n_movies, self.n_factors))
 
         # Prepare training data as indices for speed
         u_indices = train_df['userId'].map(self.user_map).values
         i_indices = train_df['movieId'].map(self.movie_map).values
         ratings = train_df['rating'].values
 
-        print(f"Starting Gradient Descent for {self.epochs} epochs...")
+        print(f"Training on {len(train_df)} rows (Mean: {self.global_mean:.2f})...")
         for epoch in range(self.epochs):
             for i in range(len(ratings)):
                 u, m, r = u_indices[i], i_indices[i], ratings[i]
 
-                # Predict and calculate error
-                prediction = np.dot(self.P[u, :], self.Q[m, :].T)
+                # Prediction = Global Mean + (P dot Q)
+                # This way, the vectors only learn the "deviation" from the average
+                prediction = self.global_mean + np.dot(self.P[u, :], self.Q[m, :].T)
                 error = r - prediction
 
-                # Update Latent Factors (Gradient Descent Step)
+                # Update with smaller steps
                 self.P[u, :] += self.lr * (error * self.Q[m, :] - self.reg * self.P[u, :])
                 self.Q[m, :] += self.lr * (error * self.P[u, :] - self.reg * self.Q[m, :])
 
@@ -69,9 +73,10 @@ class MatrixFactorizer:
 
         # If user/movie was not in training set (Cold Start), return global mean
         if u is None or m is None:
-            return 3.5
+            return self.global_mean
 
-        return np.dot(self.P[u, :], self.Q[m, :].T)
+        pred = self.global_mean + np.dot(self.P[u, :], self.Q[m, :].T)
+        return np.clip(pred, 0.5, 5.0)
 
     def predict_test_set(self, test_df):
         """
@@ -93,10 +98,13 @@ class MatrixFactorizer:
 
         def get_prediction(row):
             if pd.isna(row['u_idx']) or pd.isna(row['m_idx']):
-                return 3.5  # Simple Cold Start baseline
+                return self.global_mean  # Simple Cold Start baseline
 
             u, m = int(row['u_idx']), int(row['m_idx'])
-            return np.dot(self.P[u, :], self.Q[m, :].T)
+            pred = self.global_mean + np.dot(self.P[u, :], self.Q[m, :].T)
+
+            # Ensures predictions stay within the valid 0.5 - 5.0 range
+            return np.clip(pred, 0.5, 5.0)
 
         results_df['predicted_rating'] = results_df.apply(get_prediction, axis=1)
 
