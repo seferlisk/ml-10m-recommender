@@ -7,16 +7,20 @@ class MatrixFactorizer:
     """
     THE MODEL: Handles only the mathematical training and raw prediction.
     """
-    def __init__(self, n_factors=10, learning_rate=0.005, reg=0.02, epochs=3):
+    def __init__(self, n_factors=20, learning_rate=0.01, reg=0.02, epochs=5):
         self.n_factors = n_factors
         self.lr = learning_rate
         self.reg = reg
         self.epochs = epochs
         self.user_map = {}
         self.movie_map = {}
+        # Latent Matrices
         self.P = None  # User matrix
         self.Q = None  # Movie matrix
-        self.global_mean = 3.5
+        # Bias Terms
+        self.user_biases = None
+        self.movie_biases = None
+        self.global_mean = 0
 
     def split_data(self, df):
         """Temporal split."""
@@ -45,6 +49,10 @@ class MatrixFactorizer:
         self.P = np.random.normal(scale=0.1, size=(n_users, self.n_factors))
         self.Q = np.random.normal(scale=0.1, size=(n_movies, self.n_factors))
 
+        # Initialize Biases at Zero
+        self.user_biases = np.zeros(n_users)
+        self.movie_biases = np.zeros(n_movies)
+
         # Prepare training data as indices for speed
         u_indices = train_df['userId'].map(self.user_map).values
         i_indices = train_df['movieId'].map(self.movie_map).values
@@ -55,12 +63,17 @@ class MatrixFactorizer:
             for i in range(len(ratings)):
                 u, m, r = u_indices[i], i_indices[i], ratings[i]
 
-                # Prediction = Global Mean + (P dot Q)
-                # This way, the vectors only learn the "deviation" from the average
-                prediction = self.global_mean + np.dot(self.P[u, :], self.Q[m, :].T)
+                # Prediction formula: Global Mean + User_Bias + Movie_Bias + (P dot Q)
+                prediction = self.global_mean + self.user_biases[u] + self.movie_biases[m] + \
+                             np.dot(self.P[u, :], self.Q[m, :].T)
+
                 error = r - prediction
 
-                # Update with smaller steps
+                # Update Biases
+                self.user_biases[u] += self.lr * (error - self.reg * self.user_biases[u])
+                self.movie_biases[m] += self.lr * (error - self.reg * self.movie_biases[m])
+
+                # Update Latent Factors
                 self.P[u, :] += self.lr * (error * self.Q[m, :] - self.reg * self.P[u, :])
                 self.Q[m, :] += self.lr * (error * self.P[u, :] - self.reg * self.Q[m, :])
 
@@ -71,11 +84,12 @@ class MatrixFactorizer:
         u = self.user_map.get(user_id)
         m = self.movie_map.get(movie_id)
 
-        # If user/movie was not in training set (Cold Start), return global mean
-        if u is None or m is None:
-            return self.global_mean
+        if u is None and m is None: return self.global_mean
+        if u is None: return self.global_mean + self.movie_biases[m]
+        if m is None: return self.global_mean + self.user_biases[u]
 
-        pred = self.global_mean + np.dot(self.P[u, :], self.Q[m, :].T)
+        pred = self.global_mean + self.user_biases[u] + self.movie_biases[m] + \
+               np.dot(self.P[u, :], self.Q[m, :].T)
         return np.clip(pred, 0.5, 5.0)
 
     def predict_test_set(self, test_df):
@@ -106,7 +120,8 @@ class MatrixFactorizer:
             # Ensures predictions stay within the valid 0.5 - 5.0 range
             return np.clip(pred, 0.5, 5.0)
 
-        results_df['predicted_rating'] = results_df.apply(get_prediction, axis=1)
+        # results_df['predicted_rating'] = results_df.apply(get_prediction, axis=1)
+        results_df['predicted_rating'] = results_df.apply(lambda x: self.predict_rating(x['userId'], x['movieId']), axis=1)
 
         # Drop the temporary index columns
         results_df.drop(columns=['u_idx', 'm_idx'], inplace=True)
