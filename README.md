@@ -1,3 +1,5 @@
+![gh-repository.png](gh-repository.png)
+
 # MovieLens 10M Recommender System
 
 A professional-grade movie recommendation engine built using the **MovieLens 10M dataset**. This project implements a full machine learning pipeline—from memory-optimized data ingestion and statistical genre analysis to a custom-built Biased Matrix Factorization model optimized via Stochastic Gradient Descent.
@@ -69,6 +71,7 @@ pip install -r requirements.txt
 
 ## 📈 Results
 The model's performance is evaluated using Mean Squared Error (MSE) on a temporal test set (ratings from 2008-2009).
+
 
 ## 📜 License
 #### Distributed under the  Apache-2.0 license.
